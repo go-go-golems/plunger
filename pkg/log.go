@@ -115,7 +115,6 @@ func (l *LogWriter) Write(p []byte) (n int, err error) {
 }
 
 func (l *LogWriter) Init() error {
-
 	ctb := sqlbuilder.NewCreateTableBuilder()
 	ctb.CreateTable("log_entries").
 		IfNotExists().
@@ -142,16 +141,21 @@ func (l *LogWriter) Init() error {
 		return err
 	}
 
+	err := l.createTypeEnumTable()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
-func (l *LogWriter) createTypeEnumTable(db *sqlx.DB) error {
+func (l *LogWriter) createTypeEnumTable() error {
 	ctb := sqlbuilder.NewCreateTableBuilder()
 	ctb.CreateTable("type_enum").
 		IfNotExists().
 		Define("type", "VARCHAR(255)", "PRIMARY KEY").
 		Define("seq", "INTEGER", "NOT NULL")
-	if _, err := db.Exec(ctb.String()); err != nil {
+	if _, err := l.db.Exec(ctb.String()); err != nil {
 		return err
 	}
 
@@ -165,7 +169,7 @@ func (l *LogWriter) createTypeEnumTable(db *sqlx.DB) error {
 		Values("blob", LogEntryTypeBlob).
 		Values("json", LogEntryTypeJSON)
 	s, args := q.Build()
-	if _, err := db.Exec(s, args...); err != nil {
+	if _, err := l.db.Exec(s, args...); err != nil {
 		return err
 	}
 
