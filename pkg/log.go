@@ -3,6 +3,7 @@ package pkg
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"github.com/huandu/go-sqlbuilder"
 	"github.com/jmoiron/sqlx"
 	"time"
@@ -24,21 +25,74 @@ type RowType struct {
 	Type LogEntryTypeType
 }
 
+// MetaKey is used to store keys that are often used, to avoid storing them as full strings.
+// Instead, we store them by id and use a lookup table to get the full string.
+type MetaKey struct {
+	Name string
+	ID   int
+}
+
+type MetaKeys struct {
+	Keys map[string]MetaKey
+}
+
+func (m *MetaKeys) Get(name string) (MetaKey, bool) {
+	key, ok := m.Keys[name]
+	return key, ok
+}
+
+func (m *MetaKeys) Add(name string) MetaKey {
+	key := MetaKey{
+		Name: name,
+		ID:   len(m.Keys) + 1,
+	}
+	m.Keys[name] = key
+	return key
+}
+
+func (m *MetaKeys) AddWithID(name string, id int) MetaKey {
+	key := MetaKey{
+		Name: name,
+		ID:   id,
+	}
+	m.Keys[name] = key
+	return key
+}
+
+type Schema struct {
+	MetaKeys *MetaKeys
+}
+
+func NewSchema() *Schema {
+	return &Schema{
+		MetaKeys: &MetaKeys{
+			Keys: make(map[string]MetaKey),
+		},
+	}
+}
+
+// LogWriter is the main class in Plunger.
+// It deserializes the JSON binaries handed over by zerolog, and decomposes
+// the message into the database schema specified at creation time.
 type LogWriter struct {
 	db *sqlx.DB
 
-	Types map[string]RowType
+	schema *Schema
 }
 
-func NewLogWriter(db *sqlx.DB, types map[string]RowType) *LogWriter {
+func NewLogWriter(db *sqlx.DB, schema *Schema) *LogWriter {
 	return &LogWriter{
-		db:    db,
-		Types: types,
+		db:     db,
+		schema: schema,
 	}
 }
 
 func (l *LogWriter) Close() error {
-	return l.db.Close()
+	if l.db != nil {
+		return l.db.Close()
+	} else {
+		return nil
+	}
 }
 
 func (l *LogWriter) Write(p []byte) (n int, err error) {
@@ -80,6 +134,8 @@ func (l *LogWriter) Write(p []byte) (n int, err error) {
 		var intValue, realValue sql.NullInt64
 		var textValue, blobValue sql.NullString
 		var typeValue LogEntryTypeType
+		var name sql.NullString
+		var meta_key_id sql.NullInt32
 
 		switch v := v.(type) {
 		case float64:
@@ -100,10 +156,16 @@ func (l *LogWriter) Write(p []byte) (n int, err error) {
 			typeValue = LogEntryTypeJSON
 		}
 
+		if metaKey, ok := l.schema.MetaKeys.Get(k); ok {
+			meta_key_id = sql.NullInt32{Int32: int32(metaKey.ID), Valid: true}
+		} else {
+			name = sql.NullString{String: k, Valid: true}
+		}
+
 		q := sqlbuilder.NewInsertBuilder()
 		q.InsertInto("log_entries_meta").
-			Cols("log_entry_id", "type", "name", "int_value", "real_value", "text_value", "blob_value").
-			Values(logEntryID, typeValue, k, intValue, realValue, textValue, blobValue)
+			Cols("log_entry_id", "type", "name", "meta_key_id", "int_value", "real_value", "text_value", "blob_value").
+			Values(logEntryID, typeValue, name, meta_key_id, intValue, realValue, textValue, blobValue)
 		s, args := q.Build()
 		if _, err := tx.Exec(s, args...); err != nil {
 			return 0, err
@@ -132,16 +194,51 @@ func (l *LogWriter) Init() error {
 		Define("id", "INTEGER", "PRIMARY KEY", "AUTOINCREMENT").
 		Define("log_entry_id", "INTEGER", "NOT NULL").
 		Define("type", "VARCHAR(255)", "NOT NULL").
-		Define("name", "VARCHAR(255)", "NOT NULL").
+		Define("meta_key_id", "INTEGER").
+		Define("name", "VARCHAR(255)").
 		Define("int_value", "INTEGER").
 		Define("real_value", "REAL").
 		Define("text_value", "TEXT").
 		Define("blob_value", "BLOB")
+
 	if _, err := l.db.Exec(ctb.String()); err != nil {
 		return err
 	}
 
+	// create indices using raw sql
+	indexedColumns := []string{
+		"log_entry_id",
+		"type",
+		"name",
+	}
+	for _, col := range indexedColumns {
+		query := fmt.Sprintf("CREATE INDEX IF NOT EXISTS log_entries_meta_%s_idx ON log_entries_meta (%s)", col, col)
+		_, err := l.db.Exec(query)
+		if err != nil {
+			return err
+		}
+	}
+
 	err := l.createTypeEnumTable()
+	if err != nil {
+		return err
+	}
+
+	err = l.saveLogDBSchema()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// saveLogDBSchema stores the schema of the logwriter in the database.
+//
+// NOTE(manuel, 2023-02-06): This is a very naive implementation.
+// It currently blindly overwrites it, but in the future, it will warn
+// if there is a schema mismatch with what is already present.
+func (l *LogWriter) saveLogDBSchema() error {
+	err := l.saveMetaKeys()
 	if err != nil {
 		return err
 	}
@@ -167,10 +264,44 @@ func (l *LogWriter) createTypeEnumTable() error {
 		Values("real", LogEntryTypeReal).
 		Values("text", LogEntryTypeText).
 		Values("blob", LogEntryTypeBlob).
-		Values("json", LogEntryTypeJSON)
+		Values("json", LogEntryTypeJSON).
+		SQL("ON CONFLICT (type) DO NOTHING")
 	s, args := q.Build()
 	if _, err := l.db.Exec(s, args...); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (l *LogWriter) saveMetaKeys() error {
+	ctb := sqlbuilder.NewCreateTableBuilder()
+	ctb.CreateTable("meta_keys").
+		IfNotExists().
+		Define("id", "INTEGER", "PRIMARY KEY NOT NULL").
+		Define("key", "VARCHAR(255)")
+	if _, err := l.db.Exec(ctb.String()); err != nil {
+		return err
+	}
+
+	// add unique index on key
+	_, err := l.db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS meta_keys_key_idx ON meta_keys (key)")
+	if err != nil {
+		return err
+	}
+
+	// Insert the keys using InsertBuilder
+	if len(l.schema.MetaKeys.Keys) > 0 {
+		q := sqlbuilder.NewInsertBuilder()
+		q.InsertInto("meta_keys").
+			Cols("id", "key")
+		for _, v := range l.schema.MetaKeys.Keys {
+			q.Values(v.ID, v.Name)
+		}
+		s, args := q.Build()
+		if _, err := l.db.Exec(s, args...); err != nil {
+			return err
+		}
 	}
 
 	return nil

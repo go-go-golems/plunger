@@ -2,9 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -51,84 +49,29 @@ func initViper(appName string, configFilePath string) error {
 	return nil
 }
 
-type logConfig struct {
-	WithCaller bool
-	Level      string
-	DBFile     string
-}
-
-type MissingDBFileError struct {
-}
-
-func (e *MissingDBFileError) Error() string {
-	return "missing db file"
-}
-
-func initLogging(config *logConfig) (*pkg.LogWriter, *sqlx.DB, error) {
-	logLevel := viper.GetString("log-level")
-	verbose := viper.GetBool("verbose")
-	if verbose && logLevel != "trace" {
-		logLevel = "debug"
-	}
-
-	if config.WithCaller {
-		log.Logger = log.With().Caller().Logger()
-	}
-
-	if config.DBFile == "" {
-		return nil, nil, &MissingDBFileError{}
-	}
-
-	db, err := sqlx.Open("sqlite3", config.DBFile)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	logWriter := pkg.NewLogWriter(db, nil)
-	err = logWriter.Init()
-	if err != nil {
-		_ = db.Close()
-		return nil, nil, err
-	}
-	log.Logger = log.Output(logWriter)
-
-	switch config.Level {
-	case "debug":
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	case "info":
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	case "warn":
-		zerolog.SetGlobalLevel(zerolog.WarnLevel)
-	case "error":
-		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
-	case "fatal":
-		zerolog.SetGlobalLevel(zerolog.FatalLevel)
-	}
-
-	return logWriter, db, nil
-}
-
 var logCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Log a message",
 	Run: func(cmd *cobra.Command, args []string) {
-		err := initViper("plunger", "")
+		force, _ := cmd.Flags().GetBool("force")
+
+		metaKeys, _ := cmd.Flags().GetStringSlice("meta-keys")
+
+		schema := pkg.NewSchema()
+
+		for _, metaKey := range metaKeys {
+			schema.MetaKeys.Add(metaKey)
+		}
+
+		logWriter, err := initConfigAndLogging(force, schema)
 		cobra.CheckErr(err)
 
-		config := &logConfig{
-			WithCaller: viper.GetBool("with-caller"),
-			Level:      viper.GetString("log-level"),
-			DBFile:     viper.GetString("db"),
-		}
-		logWriter, _, err := initLogging(config)
 		defer func(logWriter *pkg.LogWriter) {
 			err := logWriter.Close()
 			if err != nil {
 				fmt.Println(err)
 			}
 		}(logWriter)
-
-		cobra.CheckErr(err)
 
 		log.Debug().Msg("hello world")
 		log.Info().
@@ -140,6 +83,36 @@ var logCmd = &cobra.Command{
 	},
 }
 
+func initConfigAndLogging(deleteFile bool, schema *pkg.Schema) (*pkg.LogWriter, error) {
+	err := initViper("plunger", "")
+	cobra.CheckErr(err)
+
+	logLevel := viper.GetString("log-level")
+	verbose := viper.GetBool("verbose")
+	if verbose && logLevel != "trace" {
+		logLevel = "debug"
+	}
+
+	config := &pkg.LoggerConfig{
+		WithCaller: viper.GetBool("with-caller"),
+		Level:      logLevel,
+		DBFile:     viper.GetString("db"),
+		Schema:     schema,
+	}
+
+	if deleteFile {
+		err = os.Remove(config.DBFile)
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
+
+	logWriter, _, err := pkg.InitLogging(config)
+	cobra.CheckErr(err)
+
+	return logWriter, err
+}
+
 var rootCmd = &cobra.Command{
 	Use: "plunger",
 }
@@ -148,6 +121,8 @@ func init() {
 	rootCmd.PersistentFlags().String("db", "", "Database file")
 
 	rootCmd.AddCommand(logCmd)
+	logCmd.Flags().Bool("force", false, "Delete the log file before starting")
+	logCmd.Flags().StringSlice("meta-keys", []string{}, "Meta keys")
 }
 
 func main() {
