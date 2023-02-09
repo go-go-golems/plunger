@@ -2,52 +2,15 @@ package main
 
 import (
 	"fmt"
+	clay "github.com/go-go-golems/clay/pkg"
+	"github.com/go-go-golems/plunger/pkg"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/wesen/plunger/pkg"
 	"os"
-	"strings"
 	"time"
 )
-
-func initViper(appName string, configFilePath string) error {
-	viper.SetEnvPrefix(appName)
-
-	if configFilePath != "" {
-		viper.SetConfigFile(configFilePath)
-	} else {
-		viper.AddConfigPath(".")
-		viper.AddConfigPath(fmt.Sprintf("$HOME/.%s", appName))
-		viper.AddConfigPath(fmt.Sprintf("/etc/%s", appName))
-
-		xdgConfigPath, err := os.UserConfigDir()
-		if err == nil {
-			viper.AddConfigPath(fmt.Sprintf("%s/%s", xdgConfigPath, appName))
-		}
-	}
-
-	// Read the configuration file into Viper
-	err := viper.ReadInConfig()
-	// if the file does not exist, continue normally
-	if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-		// Config file not found; ignore error
-	} else if err != nil {
-		// Config file was found but another error was produced
-		return err
-	}
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	viper.AutomaticEnv()
-
-	// Bind the variables to the command-line flags
-	err = viper.BindPFlags(rootCmd.PersistentFlags())
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
 
 var logCmd = &cobra.Command{
 	Use:   "log",
@@ -84,7 +47,7 @@ var logCmd = &cobra.Command{
 }
 
 func initConfigAndLogging(deleteFile bool, schema *pkg.Schema) (*pkg.LogWriter, error) {
-	err := initViper("plunger", "")
+	err := clay.InitViper("plunger", rootCmd)
 	cobra.CheckErr(err)
 
 	logLevel := viper.GetString("log-level")
