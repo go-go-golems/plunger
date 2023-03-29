@@ -143,7 +143,7 @@ func (l *LogWriter) Close() error {
 	}
 }
 
-func (l *LogWriter) Write(p []byte) (n int, err error) {
+func (l *LogWriter) Write(p []byte) (int, error) {
 	var log map[string]interface{}
 	if err := json.Unmarshal(p, &log); err != nil {
 		return 0, err
@@ -221,7 +221,6 @@ func (l *LogWriter) Write(p []byte) (n int, err error) {
 	}
 
 	return len(p), nil
-
 }
 
 func (l *LogWriter) Init() error {

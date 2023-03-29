@@ -44,13 +44,12 @@ nfpms:
     maintainer: Manuel Odendahl <wesen@ruinwesen.com>
 
     description: |-
-      Sqleton is a tool to query databases.
+      Plunger is a zerolog backend for sqlite
 
     license: MIT
 
     # Formats to be generated.
     formats:
-      - apk
       - deb
       - rpm
 
