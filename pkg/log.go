@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"github.com/huandu/go-sqlbuilder"
 	"github.com/jmoiron/sqlx"
+	"github.com/pkg/errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -180,7 +182,8 @@ func (l *LogWriter) Write(p []byte) (int, error) {
 			continue
 		}
 
-		var intValue, realValue sql.NullInt64
+		var intValue sql.NullInt64
+		var realValue sql.NullFloat64
 		var textValue, blobValue sql.NullString
 		var typeValue LogEntryType
 		var name sql.NullString
@@ -188,7 +191,7 @@ func (l *LogWriter) Write(p []byte) (int, error) {
 
 		switch v := v.(type) {
 		case float64:
-			realValue = sql.NullInt64{Int64: int64(v), Valid: true}
+			realValue = sql.NullFloat64{Float64: v, Valid: true}
 			typeValue = LogEntryTypeReal
 		case int64:
 			intValue = sql.NullInt64{Int64: v, Valid: true}
@@ -222,6 +225,135 @@ func (l *LogWriter) Write(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+type LogEntry struct {
+	ID      int       `db:"id"`
+	Date    time.Time `db:"date"`
+	Level   string    `db:"level"`
+	Session string    `db:"session"`
+	Meta    map[string]interface{}
+}
+
+type LogEntryMeta struct {
+	ID         int          `db:"id"`
+	LogEntryID int          `db:"log_entry_id"`
+	Type       LogEntryType `db:"type"`
+	Name       *string      `db:"name"`
+	MetaKeyID  *int         `db:"meta_key_id"`
+	IntValue   *int64       `db:"int_value"`
+	RealValue  *float64     `db:"real_value"`
+	TextValue  *string      `db:"text_value"`
+	BlobValue  *[]byte      `db:"blob_value"`
+	MetaKey    *string      `db:"meta_key"`
+}
+
+func (lem *LogEntryMeta) Value() (interface{}, error) {
+	switch lem.Type {
+	case LogEntryTypeInt:
+		if lem.IntValue == nil {
+			return nil, errors.New("int value is nil")
+		}
+		return *lem.IntValue, nil
+	case LogEntryTypeReal:
+		if lem.RealValue == nil {
+			return nil, errors.New("real value is nil")
+		}
+		return *lem.RealValue, nil
+	case LogEntryTypeText:
+		if lem.TextValue == nil {
+			return nil, errors.New("text value is nil")
+		}
+		return *lem.TextValue, nil
+	case LogEntryTypeJSON:
+		if lem.BlobValue == nil {
+			return nil, errors.New("blob value is nil")
+		}
+		var v interface{}
+		if err := json.Unmarshal(*lem.BlobValue, &v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case LogEntryTypeBlob:
+		if lem.BlobValue == nil {
+			return nil, errors.New("blob value is nil")
+		}
+		return *lem.BlobValue, nil
+	default:
+		return nil, errors.New("unknown type")
+	}
+}
+
+func (l *LogWriter) GetEntries() ([]*LogEntry, error) {
+	entries := map[int]*LogEntry{}
+	q := sqlbuilder.Select("*").From("log_entries").OrderBy("id ASC")
+	rows, err := l.db.Queryx(q.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		entry := &LogEntry{}
+		if err := rows.StructScan(entry); err != nil {
+			return nil, err
+		}
+		entries[entry.ID] = entry
+	}
+
+	q = sqlbuilder.Select("lem.*, mk.key AS meta_key").
+		From("log_entries_meta lem").
+		JoinWithOption(sqlbuilder.LeftJoin, "meta_keys mk", "mk.id = lem.meta_key_id")
+
+	s := q.String()
+	rows, err = l.db.Queryx(s)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		meta := &LogEntryMeta{}
+		if err := rows.StructScan(meta); err != nil {
+			return nil, err
+		}
+		entry, ok := entries[meta.LogEntryID]
+		if !ok {
+			continue
+		}
+
+		if entry.Meta == nil {
+			entry.Meta = map[string]interface{}{}
+		}
+		v, err := meta.Value()
+		if err != nil {
+			return nil, err
+		}
+		if v == nil {
+			continue
+		}
+		name := ""
+		if meta.Name != nil {
+			name = *meta.Name
+		} else if meta.MetaKey != nil {
+			name = *meta.MetaKey
+		} else {
+			continue
+		}
+		entry.Meta[name] = v
+	}
+
+	ret := []*LogEntry{}
+	for _, entry := range entries {
+		ret = append(ret, entry)
+	}
+
+	// sort by id
+	sort.Slice(ret, func(i, j int) bool {
+		return ret[i].ID < ret[j].ID
+	})
+
+	return ret, nil
 }
 
 func (l *LogWriter) Init() error {
@@ -374,6 +506,7 @@ func (l *LogWriter) loadMetaKeys() error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var id int

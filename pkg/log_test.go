@@ -155,5 +155,81 @@ func TestLogWriterInit(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "foo", v.Name)
 	assert.Equal(t, 0, v.ID)
+}
 
+func TestLogWriterWrite(t *testing.T) {
+	db := sqlx.MustOpen("sqlite3", ":memory:")
+	// /tmp/test.db
+	//db := sqlx.MustOpen("sqlite3", "/tmp/test.db")
+	require.NotNil(t, db)
+	defer db.Close()
+
+	lw := NewLogWriter(db)
+	assert.NotNil(t, lw)
+
+	err := lw.Init()
+	require.NoError(t, err)
+
+	lw.schema.MetaKeys.Add("foo")
+	lw.schema.MetaKeys.Add("bar")
+	lw.schema.MetaKeys.Add("baz")
+
+	err = lw.saveSchema()
+	require.NoError(t, err)
+
+	// Write a log entry with no meta data.
+	n, err := lw.Write([]byte(`{"level": "DEBUG", "session": "123123"}`))
+	assert.NoError(t, err)
+	_ = n
+
+	// Write a log entry with meta data.
+	n, err = lw.Write([]byte(`{"foo": "bar", "level": "DEBUG", "session": "123123", "baz": 42}`))
+	assert.NoError(t, err)
+	_ = n
+
+	// Write a log entry with meta data.
+	n, err = lw.Write([]byte(`{"foo": "bar", "level": "DEBUG", "session": "123123", "baz": 42, "test": "foo"}`))
+	assert.NoError(t, err)
+	_ = n
+
+	// Write a log entry with nested meta data.
+	n, err = lw.Write([]byte(`{"foo": "bar", "level": "DEBUG", "session": "123123", "baz": 42, "test": {"foo": "bar", "baz": 42}}`))
+	assert.NoError(t, err)
+	_ = n
+
+	entries, err := lw.GetEntries()
+	require.NoError(t, err)
+	assert.Len(t, entries, 4)
+
+	// Check the first entry.
+	assert.Equal(t, "DEBUG", entries[0].Level)
+	assert.Equal(t, "123123", entries[0].Session)
+	assert.Len(t, entries[0].Meta, 0)
+
+	// Check the second entry.
+	assert.Equal(t, "DEBUG", entries[1].Level)
+	assert.Equal(t, "123123", entries[1].Session)
+	assert.Len(t, entries[1].Meta, 2)
+	assert.Equal(t, "bar", entries[1].Meta["foo"])
+	assert.Equal(t, float64(42), entries[1].Meta["baz"])
+	assert.Nil(t, entries[1].Meta["bar"])
+
+	// Check the third entry.
+	assert.Equal(t, "DEBUG", entries[2].Level)
+	assert.Equal(t, "123123", entries[2].Session)
+	assert.Len(t, entries[2].Meta, 3)
+	assert.Equal(t, "bar", entries[2].Meta["foo"])
+	assert.Equal(t, float64(42), entries[2].Meta["baz"])
+	assert.Equal(t, "foo", entries[2].Meta["test"])
+
+	// Check the fourth entry.
+	assert.Equal(t, "DEBUG", entries[3].Level)
+	assert.Equal(t, "123123", entries[3].Session)
+	assert.Len(t, entries[3].Meta, 3)
+	assert.Equal(t, "bar", entries[3].Meta["foo"])
+	assert.Equal(t, float64(42), entries[3].Meta["baz"])
+	v, ok := entries[3].Meta["test"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "bar", v["foo"])
+	assert.Equal(t, float64(42), v["baz"])
 }
