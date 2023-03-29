@@ -197,7 +197,7 @@ func TestLogWriterWrite(t *testing.T) {
 	assert.NoError(t, err)
 	_ = n
 
-	entries, err := lw.GetEntries()
+	entries, err := lw.GetEntries(nil)
 	require.NoError(t, err)
 	assert.Len(t, entries, 4)
 
@@ -232,4 +232,6 @@ func TestLogWriterWrite(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "bar", v["foo"])
 	assert.Equal(t, float64(42), v["baz"])
+
+	// Check searching
 }

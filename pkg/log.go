@@ -16,12 +16,25 @@ import (
 type LogEntryType int
 
 const (
-	LogEntryTypeInt LogEntryType = iota
-	LogEntryTypeReal
+	LogEntryTypeReal LogEntryType = iota
 	LogEntryTypeText
 	LogEntryTypeBlob
 	LogEntryTypeJSON
 )
+
+func (t LogEntryType) String() string {
+	switch t {
+	case LogEntryTypeReal:
+		return "real"
+	case LogEntryTypeText:
+		return "text"
+	case LogEntryTypeBlob:
+		return "blob"
+	case LogEntryTypeJSON:
+		return "json"
+	}
+	return "unknown"
+}
 
 type Row struct {
 	Name string
@@ -146,6 +159,43 @@ func (l *LogWriter) Close() error {
 	}
 }
 
+func ToLogEntryType(v interface{}) LogEntryType {
+	switch v.(type) {
+	case float32:
+		return LogEntryTypeReal
+	case float64:
+		return LogEntryTypeReal
+	case int:
+		return LogEntryTypeReal
+	case int8:
+		return LogEntryTypeReal
+	case int16:
+		return LogEntryTypeReal
+	case int32:
+		return LogEntryTypeReal
+	case int64:
+		return LogEntryTypeReal
+	case uint:
+		return LogEntryTypeReal
+	case uint8:
+		return LogEntryTypeReal
+	case uint16:
+		return LogEntryTypeReal
+	case uint32:
+		return LogEntryTypeReal
+	case uint64:
+		return LogEntryTypeReal
+
+	case string:
+		return LogEntryTypeText
+	case []byte:
+		return LogEntryTypeBlob
+	default:
+		return LogEntryTypeJSON
+	}
+
+}
+
 func (l *LogWriter) Write(p []byte) (int, error) {
 	var log map[string]interface{}
 	if err := json.Unmarshal(p, &log); err != nil {
@@ -193,9 +243,9 @@ func (l *LogWriter) Write(p []byte) (int, error) {
 		case float64:
 			realValue = sql.NullFloat64{Float64: v, Valid: true}
 			typeValue = LogEntryTypeReal
-		case int64:
-			intValue = sql.NullInt64{Int64: v, Valid: true}
-			typeValue = LogEntryTypeInt
+		case []byte:
+			blobValue = sql.NullString{String: string(v), Valid: true}
+			typeValue = LogEntryTypeBlob
 		case string:
 			textValue = sql.NullString{String: v, Valid: true}
 			typeValue = LogEntryTypeText
@@ -250,11 +300,6 @@ type LogEntryMeta struct {
 
 func (lem *LogEntryMeta) Value() (interface{}, error) {
 	switch lem.Type {
-	case LogEntryTypeInt:
-		if lem.IntValue == nil {
-			return nil, errors.New("int value is nil")
-		}
-		return *lem.IntValue, nil
 	case LogEntryTypeReal:
 		if lem.RealValue == nil {
 			return nil, errors.New("real value is nil")
@@ -284,14 +329,140 @@ func (lem *LogEntryMeta) Value() (interface{}, error) {
 	}
 }
 
-func (l *LogWriter) GetEntries() ([]*LogEntry, error) {
+type GetEntriesFilter struct {
+	Level            string
+	Session          string
+	From             time.Time
+	To               time.Time
+	SelectedMetaKeys []string
+	MetaFilters      map[string]interface{}
+}
+
+type GetEntriesFilterOption func(*GetEntriesFilter)
+
+func WithLevel(level string) GetEntriesFilterOption {
+	return func(f *GetEntriesFilter) {
+		f.Level = level
+	}
+}
+
+func WithSession(session string) GetEntriesFilterOption {
+	return func(f *GetEntriesFilter) {
+		f.Session = session
+	}
+}
+
+func WithFrom(from time.Time) GetEntriesFilterOption {
+	return func(f *GetEntriesFilter) {
+		f.From = from
+	}
+}
+
+func WithTo(to time.Time) GetEntriesFilterOption {
+	return func(f *GetEntriesFilter) {
+		f.To = to
+	}
+}
+
+func WithSelectedMetaKeys(keys ...string) GetEntriesFilterOption {
+	return func(f *GetEntriesFilter) {
+		if f.SelectedMetaKeys == nil {
+			f.SelectedMetaKeys = []string{}
+		}
+		f.SelectedMetaKeys = append(f.SelectedMetaKeys, keys...)
+	}
+}
+
+func WithMetaFilters(filters map[string]interface{}) GetEntriesFilterOption {
+	return func(f *GetEntriesFilter) {
+		if f.MetaFilters == nil {
+			f.MetaFilters = map[string]interface{}{}
+		}
+		for k, v := range filters {
+			f.MetaFilters[k] = v
+		}
+	}
+}
+
+func NewGetEntriesFilter(opts ...GetEntriesFilterOption) *GetEntriesFilter {
+	f := &GetEntriesFilter{}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
+}
+
+func (gef *GetEntriesFilter) Apply(metaKeys *MetaKeys, q *sqlbuilder.SelectBuilder) []interface{} {
+	args := []interface{}{}
+	if gef.Level != "" {
+		q.Where("level = ?", gef.Level)
+	}
+	if gef.Session != "" {
+		q.Where("session = ?", gef.Session)
+	}
+	if !gef.From.IsZero() {
+		q.Where("date >= ?", gef.From.Format(time.RFC3339))
+	}
+	if !gef.To.IsZero() {
+		q.Where("date <= ?", gef.To.Format(time.RFC3339))
+	}
+	if len(gef.SelectedMetaKeys) > 0 {
+		stringKeys := []string{}
+		intKeys := []int{}
+		for _, k := range gef.SelectedMetaKeys {
+			v, ok := metaKeys.Get(k)
+			if !ok {
+				stringKeys = append(stringKeys, k)
+			} else {
+				intKeys = append(intKeys, v.ID)
+			}
+		}
+		if len(stringKeys) > 0 {
+			q.Where("mk.name IN ${stringKeys}")
+			args = append(args, sqlbuilder.Named("stringKeys", stringKeys))
+		}
+		if len(intKeys) > 0 {
+			q.Where("mk.meta_key_id IN ${intKeys}")
+			args = append(args, sqlbuilder.Named("intKeys", intKeys))
+		}
+	}
+	if len(gef.MetaFilters) > 0 {
+		for k, v := range gef.MetaFilters {
+			whereName := "where_" + k
+			valueName := "value_" + k
+			v_, ok := metaKeys.Get(k)
+			entryType := ToLogEntryType(v)
+			fieldName := entryType.String() + "_value"
+			if !ok {
+				q.Where(fmt.Sprintf("mk.name = ${%s} AND lem.%s = ${%s}", whereName, fieldName, valueName))
+				args = append(args, sqlbuilder.Named(whereName, k), sqlbuilder.Named(valueName, v))
+			} else {
+				q.Where(fmt.Sprintf("mk.meta_key_id = ${%s} AND lem.%s = ${%s}", whereName, fieldName, valueName))
+				args = append(args, sqlbuilder.Named(whereName, v_.ID), sqlbuilder.Named(valueName, v))
+			}
+		}
+	}
+
+	return args
+}
+
+func (l *LogWriter) GetEntries(filter *GetEntriesFilter) ([]*LogEntry, error) {
+	if filter == nil {
+		filter = NewGetEntriesFilter()
+	}
+
 	entries := map[int]*LogEntry{}
 	q := sqlbuilder.Select("*").From("log_entries").OrderBy("id ASC")
-	rows, err := l.db.Queryx(q.String())
+	filter.Apply(l.schema.MetaKeys, q)
+	s2, args := q.Build()
+	s2 = l.db.Rebind(s2)
+	rows, err := l.db.Queryx(s2, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
+	ids := []interface{}{}
 
 	for rows.Next() {
 		entry := &LogEntry{}
@@ -299,14 +470,18 @@ func (l *LogWriter) GetEntries() ([]*LogEntry, error) {
 			return nil, err
 		}
 		entries[entry.ID] = entry
+		ids = append(ids, entry.ID)
 	}
 
-	q = sqlbuilder.Select("lem.*, mk.key AS meta_key").
-		From("log_entries_meta lem").
+	sb := sqlbuilder.Select("lem.*, mk.key AS meta_key").
+		From("log_entries_meta lem")
+
+	sb = sb.Where(sb.In("lem.log_entry_id", ids...)).
 		JoinWithOption(sqlbuilder.LeftJoin, "meta_keys mk", "mk.id = lem.meta_key_id")
 
-	s := q.String()
-	rows, err = l.db.Queryx(s)
+	s, args := sb.Build()
+	s = l.db.Rebind(s)
+	rows, err = l.db.Queryx(s, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -464,7 +639,6 @@ func (l *LogWriter) createTypeEnumTable() error {
 	q := sqlbuilder.NewInsertBuilder()
 	q.InsertInto("type_enum").
 		Cols("type", "seq").
-		Values("int", LogEntryTypeInt).
 		Values("real", LogEntryTypeReal).
 		Values("text", LogEntryTypeText).
 		Values("blob", LogEntryTypeBlob).
