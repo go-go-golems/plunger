@@ -1,10 +1,12 @@
 package pkg
 
 import (
+	"github.com/huandu/go-sqlbuilder"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"testing"
+	"time"
 
 	// sqlite
 	_ "github.com/mattn/go-sqlite3"
@@ -178,7 +180,7 @@ func TestLogWriterWrite(t *testing.T) {
 	require.NoError(t, err)
 
 	// Write a log entry with no meta data.
-	n, err := lw.Write([]byte(`{"level": "DEBUG", "session": "123123"}`))
+	n, err := lw.Write([]byte(`{"level": "INFO", "session": "123123"}`))
 	assert.NoError(t, err)
 	_ = n
 
@@ -188,12 +190,12 @@ func TestLogWriterWrite(t *testing.T) {
 	_ = n
 
 	// Write a log entry with meta data.
-	n, err = lw.Write([]byte(`{"foo": "bar", "level": "DEBUG", "session": "123123", "baz": 42, "test": "foo"}`))
+	n, err = lw.Write([]byte(`{"foo": "bar", "level": "WARN", "session": "123124", "baz": 42, "test": "foo"}`))
 	assert.NoError(t, err)
 	_ = n
 
 	// Write a log entry with nested meta data.
-	n, err = lw.Write([]byte(`{"foo": "bar", "level": "DEBUG", "session": "123123", "baz": 42, "test": {"foo": "bar", "baz": 42}}`))
+	n, err = lw.Write([]byte(`{"foo": "bar", "level": "DEBUG", "session": "123124", "baz": 42, "test": {"foo": "bar", "baz": 42}}`))
 	assert.NoError(t, err)
 	_ = n
 
@@ -202,7 +204,7 @@ func TestLogWriterWrite(t *testing.T) {
 	assert.Len(t, entries, 4)
 
 	// Check the first entry.
-	assert.Equal(t, "DEBUG", entries[0].Level)
+	assert.Equal(t, "INFO", entries[0].Level)
 	assert.Equal(t, "123123", entries[0].Session)
 	assert.Len(t, entries[0].Meta, 0)
 
@@ -215,8 +217,8 @@ func TestLogWriterWrite(t *testing.T) {
 	assert.Nil(t, entries[1].Meta["bar"])
 
 	// Check the third entry.
-	assert.Equal(t, "DEBUG", entries[2].Level)
-	assert.Equal(t, "123123", entries[2].Session)
+	assert.Equal(t, "WARN", entries[2].Level)
+	assert.Equal(t, "123124", entries[2].Session)
 	assert.Len(t, entries[2].Meta, 3)
 	assert.Equal(t, "bar", entries[2].Meta["foo"])
 	assert.Equal(t, float64(42), entries[2].Meta["baz"])
@@ -224,7 +226,7 @@ func TestLogWriterWrite(t *testing.T) {
 
 	// Check the fourth entry.
 	assert.Equal(t, "DEBUG", entries[3].Level)
-	assert.Equal(t, "123123", entries[3].Session)
+	assert.Equal(t, "123124", entries[3].Session)
 	assert.Len(t, entries[3].Meta, 3)
 	assert.Equal(t, "bar", entries[3].Meta["foo"])
 	assert.Equal(t, float64(42), entries[3].Meta["baz"])
@@ -234,4 +236,65 @@ func TestLogWriterWrite(t *testing.T) {
 	assert.Equal(t, float64(42), v["baz"])
 
 	// Check searching
+
+	// manually update date of entries
+	// entry 0 is 1990-01-01 00:00:00
+	// entry 1 is 2000-01-01 00:00:00
+	// entry 2 is 2010-01-01 00:00:00
+	// entry 3 is 2020-01-01 00:00:00
+	dates := map[int]string{
+		1: "1990-01-01 00:00:00",
+		2: "2000-01-01 00:00:00",
+		3: "2010-01-01 00:00:00",
+		4: "2020-01-01 00:00:00",
+	}
+
+	for i, date := range dates {
+		ub := sqlbuilder.Update("log_entries")
+		p, err := time.Parse("2006-01-02 15:04:05", date)
+		require.NoError(t, err)
+
+		ub.Set(ub.Assign("date", p)).
+			Where(ub.E("id", i))
+		s, args := ub.Build()
+		_, err = db.Exec(s, args...)
+		require.NoError(t, err)
+	}
+
+	entries, err = lw.GetEntries(nil)
+	require.NoError(t, err)
+	assert.Len(t, entries, 4)
+
+	parse, err := time.Parse("2006-01-02 15:04:05", "1999-01-01 00:00:00")
+	require.NoError(t, err)
+	f := NewGetEntriesFilter(WithFrom(parse))
+	entries, err = lw.GetEntries(f)
+	require.NoError(t, err)
+	assert.Len(t, entries, 3)
+	assert.Equal(t, "2000-01-01T00:00:00Z", entries[0].Date.Format(time.RFC3339))
+	assert.Equal(t, "2010-01-01T00:00:00Z", entries[1].Date.Format(time.RFC3339))
+	assert.Equal(t, "2020-01-01T00:00:00Z", entries[2].Date.Format(time.RFC3339))
+
+	parse_, err := time.Parse("2006-01-02 15:04:05", "2001-01-01 00:00:00")
+	require.NoError(t, err)
+	f = NewGetEntriesFilter(WithFrom(parse), WithTo(parse_))
+	entries, err = lw.GetEntries(f)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+	assert.Equal(t, "2000-01-01T00:00:00Z", entries[0].Date.Format(time.RFC3339))
+
+	f = NewGetEntriesFilter(WithLevel("DEBUG"))
+	entries, err = lw.GetEntries(f)
+	require.NoError(t, err)
+	assert.Len(t, entries, 2)
+	assert.Equal(t, "DEBUG", entries[0].Level)
+	assert.Equal(t, "DEBUG", entries[1].Level)
+
+	//f = NewGetEntriesFilter(WithLevel("DEBUG"), WithLevel("WARN"))
+	//entries, err = lw.GetEntries(f)
+	//require.NoError(t, err)
+	//assert.Len(t, entries, 3)
+	//assert.Equal(t, "DEBUG", entries[0].Level)
+	//assert.Equal(t, "WARN", entries[1].Level)
+	//assert.Equal(t, "DEBUG", entries[2].Level)
 }

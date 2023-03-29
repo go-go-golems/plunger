@@ -392,19 +392,18 @@ func NewGetEntriesFilter(opts ...GetEntriesFilterOption) *GetEntriesFilter {
 	return f
 }
 
-func (gef *GetEntriesFilter) Apply(metaKeys *MetaKeys, q *sqlbuilder.SelectBuilder) []interface{} {
-	args := []interface{}{}
+func (gef *GetEntriesFilter) Apply(metaKeys *MetaKeys, q *sqlbuilder.SelectBuilder) {
 	if gef.Level != "" {
-		q.Where("level = ?", gef.Level)
+		q.Where(q.E("level", gef.Level))
 	}
 	if gef.Session != "" {
-		q.Where("session = ?", gef.Session)
+		q.Where(q.E("session", gef.Session))
 	}
 	if !gef.From.IsZero() {
-		q.Where("date >= ?", gef.From.Format(time.RFC3339))
+		q.Where(q.GE("date", gef.From.Format(time.RFC3339)))
 	}
 	if !gef.To.IsZero() {
-		q.Where("date <= ?", gef.To.Format(time.RFC3339))
+		q.Where(q.LE("date", gef.To.Format(time.RFC3339)))
 	}
 	if len(gef.SelectedMetaKeys) > 0 {
 		stringKeys := []string{}
@@ -418,32 +417,25 @@ func (gef *GetEntriesFilter) Apply(metaKeys *MetaKeys, q *sqlbuilder.SelectBuild
 			}
 		}
 		if len(stringKeys) > 0 {
-			q.Where("mk.name IN ${stringKeys}")
-			args = append(args, sqlbuilder.Named("stringKeys", stringKeys))
+			q.Where(q.In("mk.name", stringKeys))
 		}
 		if len(intKeys) > 0 {
-			q.Where("mk.meta_key_id IN ${intKeys}")
-			args = append(args, sqlbuilder.Named("intKeys", intKeys))
+			q.Where(q.In("mk.meta_key_id", intKeys))
 		}
 	}
 	if len(gef.MetaFilters) > 0 {
 		for k, v := range gef.MetaFilters {
-			whereName := "where_" + k
-			valueName := "value_" + k
 			v_, ok := metaKeys.Get(k)
 			entryType := ToLogEntryType(v)
 			fieldName := entryType.String() + "_value"
 			if !ok {
-				q.Where(fmt.Sprintf("mk.name = ${%s} AND lem.%s = ${%s}", whereName, fieldName, valueName))
-				args = append(args, sqlbuilder.Named(whereName, k), sqlbuilder.Named(valueName, v))
+				q.Where(q.E("mk.name", k), q.E(fmt.Sprintf("lem.%s", fieldName), v))
 			} else {
-				q.Where(fmt.Sprintf("mk.meta_key_id = ${%s} AND lem.%s = ${%s}", whereName, fieldName, valueName))
-				args = append(args, sqlbuilder.Named(whereName, v_.ID), sqlbuilder.Named(valueName, v))
+				q.Where(q.E("mk.meta_key_id", v_.ID), q.E(fmt.Sprintf("lem.%s", fieldName), v))
 			}
 		}
 	}
 
-	return args
 }
 
 func (l *LogWriter) GetEntries(filter *GetEntriesFilter) ([]*LogEntry, error) {
