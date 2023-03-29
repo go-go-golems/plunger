@@ -9,20 +9,20 @@ import (
 	"time"
 )
 
-type LogEntryTypeType int
+// LogEntryType represents the different types LogEntries can have.
+type LogEntryType int
 
 const (
-	// LogEntryTypeInt is the type for integer values
-	LogEntryTypeInt LogEntryTypeType = iota
+	LogEntryTypeInt LogEntryType = iota
 	LogEntryTypeReal
 	LogEntryTypeText
 	LogEntryTypeBlob
 	LogEntryTypeJSON
 )
 
-type RowType struct {
+type Row struct {
 	Name string
-	Type LogEntryTypeType
+	Type LogEntryType
 }
 
 // MetaKey is used to store keys that are often used, to avoid storing them as full strings.
@@ -32,46 +32,94 @@ type MetaKey struct {
 	ID   int
 }
 
+// MetaKeys is a collection of MetaKey. It is used to quickly manage
+// adding new keys.
 type MetaKeys struct {
-	Keys map[string]MetaKey
+	Keys      map[string]*MetaKey
+	namesById map[int]string
+	maxID     int
 }
 
-func (m *MetaKeys) Get(name string) (MetaKey, bool) {
+func NewMetaKeys() *MetaKeys {
+	return &MetaKeys{
+		Keys:      make(map[string]*MetaKey),
+		namesById: make(map[int]string),
+		maxID:     0,
+	}
+}
+
+func (m *MetaKeys) Get(name string) (*MetaKey, bool) {
 	key, ok := m.Keys[name]
 	return key, ok
 }
 
-func (m *MetaKeys) Add(name string) MetaKey {
-	key := MetaKey{
-		Name: name,
-		ID:   len(m.Keys) + 1,
+func (m *MetaKeys) GetByID(id int) (*MetaKey, bool) {
+	name, ok := m.namesById[id]
+	if !ok {
+		return nil, false
 	}
+	return m.Get(name)
+}
+
+func (m *MetaKeys) Add(name string) *MetaKey {
+	key, ok := m.Get(name)
+	if ok {
+		return key
+	}
+
+	key = &MetaKey{
+		Name: name,
+		ID:   m.maxID,
+	}
+	m.maxID++
 	m.Keys[name] = key
+	m.namesById[key.ID] = name
 	return key
 }
 
-func (m *MetaKeys) AddWithID(name string, id int) MetaKey {
-	key := MetaKey{
+func (m *MetaKeys) AddWithID(name string, id int) (*MetaKey, error) {
+	name_, ok := m.namesById[id]
+	if ok {
+		if name_ != name {
+			return nil, fmt.Errorf("key %s already exists with id %d", name_, id)
+		}
+	}
+
+	key, ok := m.Get(name)
+	if ok {
+		if key.ID != id {
+			return key, fmt.Errorf("key %s already exists with id %d", name, key.ID)
+		}
+		return key, nil
+	}
+
+	key = &MetaKey{
 		Name: name,
 		ID:   id,
 	}
+	if id > m.maxID {
+		m.maxID = id
+	}
+	m.maxID++
+	m.namesById[id] = name
 	m.Keys[name] = key
-	return key
+
+	return key, nil
 }
 
+// Schema is a set of MetaKeys
 type Schema struct {
 	MetaKeys *MetaKeys
 }
 
 func NewSchema() *Schema {
 	return &Schema{
-		MetaKeys: &MetaKeys{
-			Keys: make(map[string]MetaKey),
-		},
+		MetaKeys: NewMetaKeys(),
 	}
 }
 
 // LogWriter is the main class in Plunger.
+//
 // It deserializes the JSON binaries handed over by zerolog, and decomposes
 // the message into the database schema specified at creation time.
 type LogWriter struct {
@@ -133,7 +181,7 @@ func (l *LogWriter) Write(p []byte) (n int, err error) {
 
 		var intValue, realValue sql.NullInt64
 		var textValue, blobValue sql.NullString
-		var typeValue LogEntryTypeType
+		var typeValue LogEntryType
 		var name sql.NullString
 		var meta_key_id sql.NullInt32
 

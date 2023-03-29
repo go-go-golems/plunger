@@ -2,8 +2,6 @@
 
 all: gifs
 
-VERSION=v0.0.2
-
 TAPES=$(shell ls doc/vhs/*tape)
 gifs: $(TAPES)
 	for i in $(TAPES); do vhs < $$i; done
@@ -12,7 +10,7 @@ docker-lint:
 	docker run --rm -v $(shell pwd):/app -w /app golangci/golangci-lint:v1.50.1 golangci-lint run -v
 
 lint:
-	golangci-lint run -v
+	golangci-lint run -v --enable=exhaustive
 
 test:
 	go test ./...
@@ -22,15 +20,31 @@ build:
 	go build ./...
 
 goreleaser:
-	goreleaser release --snapshot --rm-dist
+	goreleaser release --skip-sign --snapshot --rm-dist
 
-tag-release:
-	git tag ${VERSION}
+tag-major:
+	git tag $(shell svu major)
+
+tag-minor:
+	git tag $(shell svu minor)
+
+tag-patch:
+	git tag $(shell svu patch)
 
 release:
-	git push origin ${VERSION}
-	GOPROXY=proxy.golang.org go list -m github.com/go-go-golems/XXX@${VERSION}
+	git push --tags
+	GOPROXY=proxy.golang.org go list -m github.com/go-go-golems/plunger@$(shell svu current)
+
+exhaustive:
+	golangci-lint run -v --enable=exhaustive
 
 bump-glazed:
-	go get github.com/go-go-golems/glazed@main
+	go get github.com/go-go-golems/glazed@latest
 	go mod tidy
+
+
+PLUNGER_BINARY=$(shell which plunger)
+
+install:
+	go build -o ./dist/plunger ./cmd/plunger && \
+		cp ./dist/plunger $(PLUNGER_BINARY)
