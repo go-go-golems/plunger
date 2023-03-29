@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/huandu/go-sqlbuilder"
 	"github.com/jmoiron/sqlx"
+	"strings"
 	"time"
 )
 
@@ -128,10 +129,10 @@ type LogWriter struct {
 	schema *Schema
 }
 
-func NewLogWriter(db *sqlx.DB, schema *Schema) *LogWriter {
+func NewLogWriter(db *sqlx.DB) *LogWriter {
 	return &LogWriter{
 		db:     db,
-		schema: schema,
+		schema: NewSchema(),
 	}
 }
 
@@ -240,7 +241,7 @@ func (l *LogWriter) Init() error {
 		IfNotExists().
 		Define("id", "INTEGER", "PRIMARY KEY", "AUTOINCREMENT").
 		Define("log_entry_id", "INTEGER", "NOT NULL").
-		Define("type", "VARCHAR(255)", "NOT NULL").
+		Define("type", "INTEGER", "NOT NULL").
 		Define("meta_key_id", "INTEGER").
 		Define("name", "VARCHAR(255)").
 		Define("int_value", "INTEGER").
@@ -266,12 +267,27 @@ func (l *LogWriter) Init() error {
 		}
 	}
 
-	err := l.createTypeEnumTable()
+	ctb = sqlbuilder.NewCreateTableBuilder()
+	ctb.CreateTable("meta_keys").
+		IfNotExists().
+		Define("id", "INTEGER", "PRIMARY KEY NOT NULL").
+		Define("key", "VARCHAR(255)")
+	if _, err := l.db.Exec(ctb.String()); err != nil {
+		return err
+	}
+
+	// add unique index on key
+	_, err := l.db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS meta_keys_key_idx ON meta_keys (key)")
 	if err != nil {
 		return err
 	}
 
-	err = l.saveLogDBSchema()
+	err = l.createTypeEnumTable()
+	if err != nil {
+		return err
+	}
+
+	err = l.loadSchema()
 	if err != nil {
 		return err
 	}
@@ -279,13 +295,22 @@ func (l *LogWriter) Init() error {
 	return nil
 }
 
-// saveLogDBSchema stores the schema of the logwriter in the database.
+// saveSchema stores the schema of the logwriter in the database.
 //
 // NOTE(manuel, 2023-02-06): This is a very naive implementation.
 // It currently blindly overwrites it, but in the future, it will warn
 // if there is a schema mismatch with what is already present.
-func (l *LogWriter) saveLogDBSchema() error {
+func (l *LogWriter) saveSchema() error {
 	err := l.saveMetaKeys()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (l *LogWriter) loadSchema() error {
+	err := l.loadMetaKeys()
 	if err != nil {
 		return err
 	}
@@ -322,21 +347,6 @@ func (l *LogWriter) createTypeEnumTable() error {
 }
 
 func (l *LogWriter) saveMetaKeys() error {
-	ctb := sqlbuilder.NewCreateTableBuilder()
-	ctb.CreateTable("meta_keys").
-		IfNotExists().
-		Define("id", "INTEGER", "PRIMARY KEY NOT NULL").
-		Define("key", "VARCHAR(255)")
-	if _, err := l.db.Exec(ctb.String()); err != nil {
-		return err
-	}
-
-	// add unique index on key
-	_, err := l.db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS meta_keys_key_idx ON meta_keys (key)")
-	if err != nil {
-		return err
-	}
-
 	// Insert the keys using InsertBuilder
 	if len(l.schema.MetaKeys.Keys) > 0 {
 		q := sqlbuilder.NewInsertBuilder()
@@ -346,7 +356,34 @@ func (l *LogWriter) saveMetaKeys() error {
 			q.Values(v.ID, v.Name)
 		}
 		s, args := q.Build()
+		// replace INSERT with INSERT OR REPLACE
+		s = strings.Replace(s, "INSERT", "INSERT OR REPLACE", 1)
 		if _, err := l.db.Exec(s, args...); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (l *LogWriter) loadMetaKeys() error {
+	l.schema.MetaKeys = NewMetaKeys()
+
+	s := sqlbuilder.Select("*").From("meta_keys")
+	rows, err := l.db.Query(s.String())
+	if err != nil {
+		return err
+	}
+
+	for rows.Next() {
+		var id int
+		var key string
+		err = rows.Scan(&id, &key)
+		if err != nil {
+			return err
+		}
+		_, err = l.schema.MetaKeys.AddWithID(key, id)
+		if err != nil {
 			return err
 		}
 	}

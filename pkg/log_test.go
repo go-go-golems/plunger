@@ -1,8 +1,13 @@
 package pkg
 
 import (
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"testing"
+
+	// sqlite
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func TestMetaKeys(t *testing.T) {
@@ -93,4 +98,62 @@ func TestMetaKeys(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "quz", v.Name)
 	assert.Equal(t, 6, v.ID)
+}
+
+func TestLogWriterInit(t *testing.T) {
+	db := sqlx.MustOpen("sqlite3", ":memory:")
+	require.NotNil(t, db)
+	defer db.Close()
+
+	lw := NewLogWriter(db)
+	assert.NotNil(t, lw)
+
+	err := lw.Init()
+	require.NoError(t, err)
+
+	lw.schema.MetaKeys.Add("foo")
+	lw.schema.MetaKeys.Add("bar")
+	lw.schema.MetaKeys.Add("baz")
+
+	err = lw.saveSchema()
+	require.NoError(t, err)
+
+	lw = NewLogWriter(db)
+	err = lw.Init()
+	require.NoError(t, err)
+
+	v, ok := lw.schema.MetaKeys.Get("foo")
+	require.True(t, ok)
+	assert.Equal(t, "foo", v.Name)
+	assert.Equal(t, 0, v.ID)
+
+	v, ok = lw.schema.MetaKeys.Get("bar")
+	require.True(t, ok)
+	assert.Equal(t, "bar", v.Name)
+	assert.Equal(t, 1, v.ID)
+
+	v, ok = lw.schema.MetaKeys.Get("baz")
+	require.True(t, ok)
+	assert.Equal(t, "baz", v.Name)
+	assert.Equal(t, 2, v.ID)
+
+	lw.schema.MetaKeys.Add("qux")
+
+	err = lw.saveSchema()
+	require.NoError(t, err)
+
+	lw = NewLogWriter(db)
+	err = lw.Init()
+	require.NoError(t, err)
+
+	v, ok = lw.schema.MetaKeys.Get("qux")
+	require.True(t, ok)
+	assert.Equal(t, "qux", v.Name)
+	assert.Equal(t, 3, v.ID)
+
+	v, ok = lw.schema.MetaKeys.Get("foo")
+	require.True(t, ok)
+	assert.Equal(t, "foo", v.Name)
+	assert.Equal(t, 0, v.ID)
+
 }
