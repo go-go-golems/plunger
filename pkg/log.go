@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/huandu/go-sqlbuilder"
 	"github.com/jmoiron/sqlx"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkg/errors"
 	"sort"
 	"strings"
@@ -144,10 +145,10 @@ type LogWriter struct {
 	schema *Schema
 }
 
-func NewLogWriter(db *sqlx.DB) *LogWriter {
+func NewLogWriter(db *sqlx.DB, schema *Schema) *LogWriter {
 	return &LogWriter{
 		db:     db,
-		schema: NewSchema(),
+		schema: schema,
 	}
 }
 
@@ -281,7 +282,7 @@ type LogEntry struct {
 	ID      int       `db:"id"`
 	Date    time.Time `db:"date"`
 	Level   string    `db:"level"`
-	Session string    `db:"session"`
+	Session *string   `db:"session"`
 	Meta    map[string]interface{}
 }
 
@@ -416,26 +417,31 @@ func (gef *GetEntriesFilter) Apply(metaKeys *MetaKeys, q *sqlbuilder.SelectBuild
 				intKeys = append(intKeys, v.ID)
 			}
 		}
-		if len(stringKeys) > 0 {
-			q.Where(q.In("mk.name", stringKeys))
+		exprs := []string{}
+		for _, k := range stringKeys {
+			exprs = append(exprs, q.In("mk.name", k))
 		}
-		if len(intKeys) > 0 {
-			q.Where(q.In("mk.meta_key_id", intKeys))
+		for _, k := range intKeys {
+			exprs = append(exprs, q.In("mk.meta_key_id", k))
+		}
+		if len(exprs) > 0 {
+			q.Where(q.Or(exprs...))
 		}
 	}
+
 	if len(gef.MetaFilters) > 0 {
 		for k, v := range gef.MetaFilters {
 			v_, ok := metaKeys.Get(k)
 			entryType := ToLogEntryType(v)
 			fieldName := entryType.String() + "_value"
-			if !ok {
-				q.Where(q.E("mk.name", k), q.E(fmt.Sprintf("lem.%s", fieldName), v))
-			} else {
-				q.Where(q.E("mk.meta_key_id", v_.ID), q.E(fmt.Sprintf("lem.%s", fieldName), v))
+			exprs := []string{}
+			exprs = append(exprs, q.And(q.E("mk.name", k), q.E(fmt.Sprintf("lem.%s", fieldName), v)))
+			if ok {
+				exprs = append(exprs, q.And(q.E("mk.meta_key_id", v_.ID), q.E(fmt.Sprintf("lem.%s", fieldName), v)))
 			}
+			q.Where(q.Or(exprs...))
 		}
 	}
-
 }
 
 func (l *LogWriter) GetEntries(filter *GetEntriesFilter) ([]*LogEntry, error) {
@@ -452,7 +458,9 @@ func (l *LogWriter) GetEntries(filter *GetEntriesFilter) ([]*LogEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func(rows *sqlx.Rows) {
+		_ = rows.Close()
+	}(rows)
 
 	ids := []interface{}{}
 
@@ -477,7 +485,9 @@ func (l *LogWriter) GetEntries(filter *GetEntriesFilter) ([]*LogEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func(rows *sqlx.Rows) {
+		_ = rows.Close()
+	}(rows)
 
 	for rows.Next() {
 		meta := &LogEntryMeta{}
@@ -581,6 +591,11 @@ func (l *LogWriter) Init() error {
 		return err
 	}
 
+	err = l.saveSchema()
+	if err != nil {
+		return err
+	}
+
 	err = l.createTypeEnumTable()
 	if err != nil {
 		return err
@@ -593,6 +608,10 @@ func (l *LogWriter) Init() error {
 
 	return nil
 }
+
+// TODO(manuel, 2023-08-19) Add a function to upgrade previously non-meta keys to a meta key
+
+// TODO(manuel, 2023-08-19) Add a function to add column names straight to the log entries table
 
 // saveSchema stores the schema of the logwriter in the database.
 //
@@ -672,7 +691,9 @@ func (l *LogWriter) loadMetaKeys() error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func(rows *sql.Rows) {
+		_ = rows.Close()
+	}(rows)
 
 	for rows.Next() {
 		var id int

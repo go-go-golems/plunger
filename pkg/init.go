@@ -34,7 +34,7 @@ func InitLogging(config *LoggerConfig) (*LogWriter, *sqlx.DB, error) {
 		return nil, nil, err
 	}
 
-	logWriter := NewLogWriter(db)
+	logWriter := NewLogWriter(db, config.Schema)
 	err = logWriter.Init()
 	if err != nil {
 		_ = db.Close()

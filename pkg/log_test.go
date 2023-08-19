@@ -105,7 +105,9 @@ func TestMetaKeys(t *testing.T) {
 func TestLogWriterInit(t *testing.T) {
 	db := sqlx.MustOpen("sqlite3", ":memory:")
 	require.NotNil(t, db)
-	defer db.Close()
+	defer func(db *sqlx.DB) {
+		_ = db.Close()
+	}(db)
 
 	lw := NewLogWriter(db)
 	assert.NotNil(t, lw)
@@ -164,7 +166,9 @@ func TestLogWriterWrite(t *testing.T) {
 	// /tmp/test.db
 	//db := sqlx.MustOpen("sqlite3", "/tmp/test.db")
 	require.NotNil(t, db)
-	defer db.Close()
+	defer func(db *sqlx.DB) {
+		_ = db.Close()
+	}(db)
 
 	lw := NewLogWriter(db)
 	assert.NotNil(t, lw)
