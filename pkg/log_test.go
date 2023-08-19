@@ -109,7 +109,7 @@ func TestLogWriterInit(t *testing.T) {
 		_ = db.Close()
 	}(db)
 
-	lw := NewLogWriter(db)
+	lw := NewLogWriter(db, NewSchema())
 	assert.NotNil(t, lw)
 
 	err := lw.Init()
@@ -122,7 +122,7 @@ func TestLogWriterInit(t *testing.T) {
 	err = lw.saveSchema()
 	require.NoError(t, err)
 
-	lw = NewLogWriter(db)
+	lw = NewLogWriter(db, NewSchema())
 	err = lw.Init()
 	require.NoError(t, err)
 
@@ -146,7 +146,7 @@ func TestLogWriterInit(t *testing.T) {
 	err = lw.saveSchema()
 	require.NoError(t, err)
 
-	lw = NewLogWriter(db)
+	lw = NewLogWriter(db, NewSchema())
 	err = lw.Init()
 	require.NoError(t, err)
 
@@ -170,7 +170,7 @@ func TestLogWriterWrite(t *testing.T) {
 		_ = db.Close()
 	}(db)
 
-	lw := NewLogWriter(db)
+	lw := NewLogWriter(db, NewSchema())
 	assert.NotNil(t, lw)
 
 	err := lw.Init()
@@ -209,12 +209,14 @@ func TestLogWriterWrite(t *testing.T) {
 
 	// Check the first entry.
 	assert.Equal(t, "INFO", entries[0].Level)
-	assert.Equal(t, "123123", entries[0].Session)
+	require.NotNil(t, entries[0].Session)
+	assert.Equal(t, "123123", *entries[0].Session)
 	assert.Len(t, entries[0].Meta, 0)
 
 	// Check the second entry.
 	assert.Equal(t, "DEBUG", entries[1].Level)
-	assert.Equal(t, "123123", entries[1].Session)
+	require.NotNil(t, entries[1].Session)
+	assert.Equal(t, "123123", *entries[1].Session)
 	assert.Len(t, entries[1].Meta, 2)
 	assert.Equal(t, "bar", entries[1].Meta["foo"])
 	assert.Equal(t, float64(42), entries[1].Meta["baz"])
@@ -222,7 +224,8 @@ func TestLogWriterWrite(t *testing.T) {
 
 	// Check the third entry.
 	assert.Equal(t, "WARN", entries[2].Level)
-	assert.Equal(t, "123124", entries[2].Session)
+	require.NotNil(t, entries[2].Session)
+	assert.Equal(t, "123124", *entries[2].Session)
 	assert.Len(t, entries[2].Meta, 3)
 	assert.Equal(t, "bar", entries[2].Meta["foo"])
 	assert.Equal(t, float64(42), entries[2].Meta["baz"])
@@ -230,7 +233,8 @@ func TestLogWriterWrite(t *testing.T) {
 
 	// Check the fourth entry.
 	assert.Equal(t, "DEBUG", entries[3].Level)
-	assert.Equal(t, "123124", entries[3].Session)
+	require.NotNil(t, entries[3].Session)
+	assert.Equal(t, "123124", *entries[3].Session)
 	assert.Len(t, entries[3].Meta, 3)
 	assert.Equal(t, "bar", entries[3].Meta["foo"])
 	assert.Equal(t, float64(42), entries[3].Meta["baz"])
